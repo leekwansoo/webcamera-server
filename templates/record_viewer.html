@@ -7,75 +7,216 @@
 </head>
 <body class="bg-gray-900 text-white p-4">
 <h1 class="text-xl font-bold mb-3">📹 녹화 뷰어 - 클릭하면 재생</h1>
+
 <div class="grid grid-cols-12 gap-4">
-  <div class="col-span-3 bg-gray-800 rounded p-3">
-    <div id="fileList" data-count="{{__FILES__|length}}" class="space-y-2"></div>
+  <!-- ===== 왼쪽 사이드메뉴 ===== -->
+<!-- ✅ 수정 - 버튼을 HTML에 직접 정의 -->
+<div class="col-span-3 bg-gray-800 rounded p-3">
+  <div class="text-sm font-bold mb-2 text-gray-300">📁 녹화 파일 목록</div>
+  <div id="fileList" class="space-y-2 max-h- overflow-y-auto"></div>
+
+  <!-- 선택된 파일 + 삭제 버튼 - flex로 한 줄에 -->
+  <div class="mt-3 pt-3 border-t border-gray-700 flex items-center gap-2">
+    <p id="selectedFile" class="flex-1 text-xs text-yellow-300 truncate">선택된 파일 없음</p>
+    <button id="deleteSelectedBtn" onclick="deleteFile()" style="display:none;" class="shrink-0 bg-red-600 hover:bg-red-500 px-3 py-1.5 rounded text-sm font-bold">🗑 삭제</button>
   </div>
+</div>
+
+  <!-- ===== 오른쪽 뷰어 ===== -->
   <div class="col-span-9">
     <div class="bg-black rounded aspect-video relative overflow-hidden">
-      <video id="videoPlayer" class="w-full h-full" controls playsinline></video>
+      <video id="videoPlayer" class="w-full h-full" controls playsinline preload="auto"></video>
+      <img id="skeletonImg" class="w-full h-full object-contain" style="display:none;" alt="skeleton" />
       <div id="noFile" class="absolute inset-0 flex items-center justify-center text-gray-500">왼쪽 파일 클릭</div>
     </div>
-    <div class="mt-3 flex gap-2">
-      <button onclick="video.play()" class="bg-green-600 px-6 py-2 rounded">▶ 재생</button>
-      <button onclick="video.pause()" class="bg-yellow-600 px-6 py-2 rounded">⏸ 정지</button>
-      <button onclick="capture()" class="bg-blue-600 px-6 py-2 rounded">📸 캡처</button>
-      <button onclick="video.currentTime-=0.1" class="bg-gray-700 px-3 py-2 rounded">-0.1s</button>
-      <button onclick="video.currentTime+=0.1" class="bg-gray-700 px-3 py-2 rounded">+0.1s</button>
+
+    <div class="mt-3 flex gap-2 flex-wrap">
+      <button onclick="playVideo()" class="bg-green-600 hover:bg-green-500 px-6 py-2 rounded">▶ 재생</button>
+      <button onclick="playskeleton()" class="bg-green-600 hover:bg-green-500 px-6 py-2 rounded">▶ playskeleton</button>
+      <button onclick="stopskeleton()" class="bg-yellow-600 hover:bg-yellow-500 px-6 py-2 rounded">⏸ playskeleton 정지</button>
+      <button onclick="pauseVideo()" class="bg-yellow-600 hover:bg-yellow-500 px-6 py-2 rounded">⏸ 정지</button>
+      <button onclick="capture()" class="bg-blue-600 hover:bg-blue-500 px-6 py-2 rounded">📸 캡처</button>
+      <button onclick="saveSkeleton()" class="bg-purple-600 hover:bg-purple-500 px-6 py-2 rounded">💾 스켈레톤 저장</button>
+      <button onclick="seek(-0.1)" class="bg-gray-700 hover:bg-gray-600 px-3 py-2 rounded">-0.1s</button>
+      <button onclick="seek(0.1)" class="bg-gray-700 hover:bg-gray-600 px-3 py-2 rounded">+0.1s</button>
+      <button onclick="shareFile()" class="bg-red-600 hover:bg-red-500 px-6 py-2 rounded">공유</button>
       <span id="time" class="ml-2 text-sm text-gray-400"></span>
     </div>
+
     <canvas id="canvas" style="display:none"></canvas>
     <div id="caps" class="mt-3 grid grid-cols-5 gap-2"></div>
   </div>
 </div>
 
 <script>
-const files = JSON.parse('{{__FILES__|tojson|safe}}');
-const listDiv = document.getElementById('fileList');
+console.log("[BOOT] script loaded");
+
+// 서버가 직접 넣어준 리스트 - __FILES__ 말고 files 사용
+const SERVER_FILES = {{ files | tojson | safe }};
+console.log("[BOOT] SERVER_FILES:", SERVER_FILES);
+
+let currentFile = null;
 const video = document.getElementById('videoPlayer');
+const skeletonImg = document.getElementById('skeletonImg');
+const noFile = document.getElementById('noFile');
+const fileList = document.getElementById('fileList');
+const selectedFileEl = document.getElementById('selectedFile');
+const deleteSelectedBtn = document.getElementById('deleteSelectedBtn');
+const timeEl = document.getElementById('time');
 
-files.forEach(name => {
-  const btn = document.createElement('button');
-  btn.textContent = name;
-  btn.className = 'w-full text-left text-xs bg-gray-700 hover:bg-blue-600 px-2 py-2 rounded truncate';
-  btn.onclick = () => playFile(name);
-  listDiv.appendChild(btn);
-});
+async function loadFiles() {
+  let files = SERVER_FILES;
+  if (!files || files.length === 0) {
+    try {
+      const res = await fetch('/api/recordings');
+      files = await res.json();
+    } catch (e) { console.error(e); return; }
+  }
+  fileList.innerHTML = '';
+  files.forEach((f) => {
+    const name = typeof f === 'string' ? f : f.name;
+    const row = document.createElement('div');
+    row.className = 'flex items-center gap-1 bg-gray-700 rounded px-2 py-1';
 
-function playFile(name) {
-  console.log("Playing:", name);
-  document.getElementById('noFile').style.display = 'none';
-  // encodeURIComponent로 공백/한글 파일명 처리
-  video.src = '/recordings_files/' + encodeURIComponent(name);
-  video.load();
-  video.play().catch(e => alert("재생 실패: " + e.message));
+    // ✅ 파일명만 남김 - 클릭하면 playFile()로 바로 자동 재생
+    const nameBtn = document.createElement('button');
+    nameBtn.className = 'flex-1 text-left px-1 py-2 text-sm truncate hover:text-yellow-300';
+    nameBtn.textContent = '📹 ' + name;
+    nameBtn.title = name + ' - 클릭하면 자동 재생';
+    nameBtn.onclick = () => playFile(name);
+
+    // ❌ playBtn 제거됨
+    // const playBtn = document.createElement('button');
+    // ...
+
+    row.appendChild(nameBtn);
+    fileList.appendChild(row);
+  });
 }
 
-video.addEventListener('timeupdate', () => {
-  document.getElementById('time').textContent = video.currentTime.toFixed(2) + 's / ' + (video.duration||0).toFixed(2) + 's';
-});
+// 삭제는 선택된 파일(currentFile)에 대해서만 동작
+async function deleteFile(fileName) {
+  const target = fileName || currentFile;
+  if (!target) { alert('파일을 먼저 클릭하세요'); return; }
+  if (!confirm(target + ' 삭제할까요?')) return;
+  await fetch('/api/recordings/' + encodeURIComponent(target), { method: 'DELETE' });
+  if (target === currentFile) {
+    currentFile = null;
+    video.pause();
+    video.removeAttribute('src');
+    video.load();
+    stopskeleton();
+    if (selectedFileEl) selectedFileEl.textContent = '선택된 파일 없음';
+    // ✅ 삭제 후에는 다시 숨김
+    if (deleteSelectedBtn) deleteSelectedBtn.style.display = 'none';
+    if (noFile) noFile.style.display = 'flex';
+  }
+  loadFiles();
+}
 
+// ===== 재생 =====
+function playFile(fileName) {
+  if (!fileName) return;
+  if (currentFile === fileName && video.src && !video.paused) return;
+  currentFile = fileName;
+  if (selectedFileEl) selectedFileEl.textContent = '선택: ' + currentFile;
+  // ✅ 파일 선택되면 삭제 버튼 보이기
+  if (deleteSelectedBtn) deleteSelectedBtn.style.display = 'block';
+
+  stopskeleton();
+  video.pause();
+  video.src = '/recordings/' + encodeURIComponent(currentFile);
+  video.style.display = 'block';
+  if (noFile) noFile.style.display = 'none';
+  const p = video.play();
+  if (p) p.catch((e) => console.log('play blocked:', e));
+}
+
+
+function playVideo() {
+  if (!currentFile) { alert('파일을 먼저 클릭하세요'); return; }
+  stopskeleton();
+  video.play();
+}
+
+function pauseVideo() { video.pause(); }
+function seek(sec) { video.currentTime += sec; }
+
+// ===== 스켈레톤 =====
+function playskeleton() {
+  if (!currentFile) { alert('파일을 먼저 클릭하세요'); return; }
+  // 이미 스켈레톤이 그려진 파일이면 재추적 금지
+  if (currentFile.startsWith('skeleton_')) {
+    alert('이미 스켈레톤이 그려진 파일입니다. 일반 재생으로 봅니다.');
+    stopskeleton();
+    video.play();
+    return;
+  }
+  console.log('playskeleton:', currentFile);
+  video.pause();
+  video.style.display = 'none';
+  if (noFile) noFile.style.display = 'none';
+  skeletonImg.style.display = 'block';
+  skeletonImg.src = '/skeleton/' + encodeURIComponent(currentFile);
+}
+
+function stopskeleton() {
+  skeletonImg.src = '';
+  skeletonImg.style.display = 'none';
+  video.style.display = 'block';
+  if (noFile && !currentFile) noFile.style.display = 'flex';
+  else if (noFile) noFile.style.display = 'none';
+}
+
+// ===== 캡처 =====
+// ===== 스켈레톤 저장 =====
+async function saveSkeleton() {
+  if (!currentFile) { alert('파일을 먼저 클릭하세요'); return; }
+  if (currentFile.startsWith('skeleton_')) { alert('이미 스켈레톤 파일입니다'); return; }
+  try {
+    const res = await fetch('/api/save_skeleton/' + encodeURIComponent(currentFile), { method: 'POST' });
+    const data = await res.json();
+    console.log('saveSkeleton:', data);
+    alert('저장 완료: ' + (data.saved_file || data.status));
+    loadFiles();
+  } catch (e) {
+    alert('저장 실패: ' + e);
+  }
+}
+
+// ===== 공유 =====
+function shareFile() {
+  if (!currentFile) { alert('파일을 먼저 클릭하세요'); return; }
+  const url = location.origin + '/recordings/' + encodeURIComponent(currentFile);
+  navigator.clipboard.writeText(url).then(() => alert('링크 복사됨: ' + url));
+}
+
+// ===== 캡처 - 이미지 추가 부분 보완 =====
 function capture() {
-  if (!video.src) { alert('파일 먼저 선택'); return; }
+  if (!currentFile) { alert('파일을 먼저 클릭하세요'); return; }
   const canvas = document.getElementById('canvas');
-  canvas.width = video.videoWidth;
-  canvas.height = video.videoHeight;
-  canvas.getContext('2d').drawImage(video, 0, 0);
-  const url = canvas.toDataURL('image/jpeg', 0.95);
-  const a = document.createElement('a');
-  a.download = 'capture_' + Date.now() + '.jpg';
-  a.href = url;
-  a.click();
+  const ctx = canvas.getContext('2d');
+  if (skeletonImg.style.display === 'block' && skeletonImg.naturalWidth) {
+    canvas.width = skeletonImg.naturalWidth;
+    canvas.height = skeletonImg.naturalHeight;
+    ctx.drawImage(skeletonImg, 0, 0);
+  } else {
+    if (!video.videoWidth) { alert('비디오가 로드되지 않았습니다.'); return; }
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    ctx.drawImage(video, 0, 0);
+  }
+  // ✅ 이 부분이 빠져 있었음 - 캡처 이미지를 아래에 추가
   const img = document.createElement('img');
-  img.src = url;
-  img.className = 'rounded border border-gray-700';
-  document.getElementById('caps').prepend(img);
+  img.src = canvas.toDataURL('image/jpeg', 0.9);
+  img.className = 'w-full rounded';
+  document.getElementById('caps').appendChild(img);
 }
 
-document.addEventListener('keydown', e => {
-  if (e.code === 'Space') { e.preventDefault(); video.paused ? video.play() : video.pause(); }
-  if (e.key.toLowerCase() === 'c') capture();
-});
+
+
+// ✅ 맨 마지막 - DOM이 준비된 후 무조건 호출
+console.log("[BOOT] calling loadFiles()");
+loadFiles();
 </script>
-</body>
-</html>
+    

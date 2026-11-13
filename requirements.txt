@@ -6,3 +6,4 @@ numpy
 jinja2
 python-multipart
 python-dotenv
+mediapipe==0.10.35
