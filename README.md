@@ -10,3 +10,7 @@ progress may finish after the deadline.
 
 MediaPipe 0.10.35 is required for Windows skeleton playback. After updating
 dependencies, run `uv sync --inexact` and restart the video server.
+
+## openh264-2.5.0-win64.dll 
+copy "openh264-2.5.0-win64.dll" to your venv so OpenCV always finds it:
+C:\Users\user_name\Desktop\webcamera-server\venv\Lib\site-packages\cv2\openh264-2.5.0-win64.dll
