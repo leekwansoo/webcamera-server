@@ -476,15 +476,20 @@ async def api_get_recording(file_name: str):
         media_type="video/mp4"
     )
     
+from fastapi.responses import FileResponse
+
 @app.get("/recordings/{file_name:path}")
-async def api_get_recording(file_name: str):
+async def serve_video(file_name: str):
     video_path = VIDEO_DIR / file_name
     if not video_path.exists():
         return JSONResponse({"error": "not found"}, status_code=404)
-    return StreamingResponse(
-        open(video_path, "rb"),
-        media_type="video/mp4"
+    # ✅ FileResponse는 Range를 자동으로 처리하지만, 헤더를 주면 재요청이 빨라짐
+    return FileResponse(
+        video_path,
+        media_type="video/mp4",
+        headers={"Accept-Ranges": "bytes", "Cache-Control": "public, max-age=3600"}
     )
+    
 # 2. Endpoint - save + return new filename
 @app.post("/api/save_skeleton/{file_name:path}")
 async def api_save_skeleton(file_name: str):

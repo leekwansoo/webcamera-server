@@ -17,9 +17,17 @@
   <img src="/video_feed" />
 </div>
 <div>
-  <button class="rec" onclick="fetch('/start_recording',{method:'POST'}).then(()=>alert('녹화 시작'))">● 녹화 시작</button>
-  <button onclick="fetch('/stop_recording',{method:'POST'}).then(()=>alert('녹화 종료'))">■ 녹화 종료</button>
+  <button class="rec" onclick="fetch('/webcam/start_recording',{method:'POST'}).then(()=>alert('녹화 시작'))">● 녹화 시작</button>
+  <button onclick="fetch('/webcam/stop_recording',{method:'POST'}).then(()=>alert('녹화 종료'))">■ 녹화 종료</button>
 </div>
+<p>Wait for WebCamera Activation</p>
 <p>왼쪽: WEBCAM1 / 오른쪽: WEBCAM2 - 1260x640 Portrait Wide - 비율 정상</p>
 </body>
+
+<script>
+  // Clear the Wait message once the video feed loads.
+  document.querySelector('.video-wrap img').addEventListener('load', () => {
+    document.querySelector('body > p').textContent = '';
+  });
+</script>
 </html>

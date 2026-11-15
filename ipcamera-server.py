@@ -4,9 +4,12 @@ from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse, HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from pathlib import Path
-
+from contextlib import asynccontextmanager
 from utils.functions import CAMERA_RTSP, STATE
-from utils.frame_handler import _mjpeg_frames, synced_mjpeg_generator
+from utils.frame_handler import CAMERA_CONFIG, OUTPUT_DIR
+from utils.frame_handler import to_portrait_wide, to_square
+from utils.frame_handler import get_synced_split_frame, _mjpeg_frames, open_camera_with_fallback
+from utils.frame_handler import get_camera, synced_mjpeg_generator, dummy_mjpeg_generator
 # ====== 설정 ======
 CAMERA_RTSP = CAMERA_RTSP
 print(CAMERA_RTSP)
@@ -15,9 +18,31 @@ print(CAMERA_RTSP)
 OUTPUT_DIR = Path("recordings")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-app = FastAPI()
+if os.environ["OPENCV_LOG_LEVEL"].upper() == "ERROR":
+    cv2.utils.logging.setLogLevel(cv2.utils.logging.LOG_LEVEL_ERROR)
+
+_cameras: dict[str, cv2.VideoCapture] = {}
+_locks: dict[str, threading.Lock] = {
+    "WEBCAM1": threading.Lock(),
+    "WEBCAM2": threading.Lock(),
+}
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("Server starting...")
+    yield
+    print("Server shutting down...")
+    for name, cam in _cameras.items():
+        try: cam.release()
+        except: pass
+    _cameras.clear()
+
+app = FastAPI(lifespan=lifespan)
 
 templates = Jinja2Templates(directory="templates")
+
+# ====== 녹화 상태 ======
+recording_state = {"active": False, "writer": None, "lock": threading.Lock()}
        
 class CameraReader:
     def __init__(self, url, cam_id, mode="square", start_delay=0):
@@ -124,7 +149,7 @@ managers = {
     "Camera1": CameraReader(CAMERA_RTSP["Camera1"], "Camera1", mode="square"),
     "Camera2": CameraReader(CAMERA_RTSP["Camera2"], "Camera2", mode="square", start_delay=3),
 }
-
+print(managers)
 
 # get_combined에서:
 def get_combined_portrait():
@@ -141,10 +166,6 @@ def get_combined_portrait():
 print(managers)
 # 카메라 리더 2개 생성
 cameras = list(managers.values())
-
-# 녹화 상태
-recording_state = {"active": False, "writer": None, "lock": threading.Lock()}
-
 
         
 def get_synced_split_frame():
@@ -166,7 +187,7 @@ def get_synced_split_frame():
         cv2.circle(combined, (combined.shape[1]-30, 30), 10, (0,0,255), -1)
     return combined
 
-def recording_loop():
+def recording_loop_ipcamera():
     print("Recording started")
     fourcc = cv2.VideoWriter_fourcc(*'avc1')
     filepath = OUTPUT_DIR / f"dual_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
@@ -232,6 +253,7 @@ async def video_feed():
 async def api_camera_stream(camera_id: str):
     """[UPLINK] RTSP -> MJPEG stream for browser <img>"""
     url = CAMERA_RTSP.get(camera_id)
+    print(url)
     if not url:
         return JSONResponse({"error": f"Set CAMERA1_RTSP/CAMERA2_RTSP env for {camera_id}"}, status_code=404)
     try:
@@ -241,14 +263,14 @@ async def api_camera_stream(camera_id: str):
     return StreamingResponse(_mjpeg_frames(url), media_type="multipart/x-mixed-replace; boundary=frame")
 
 
-@app.post("/start_recording")
+@app.post("/camera/start_recording")
 async def start_recording():
     if not recording_state["active"]:
         recording_state["active"] = True
-        threading.Thread(target=recording_loop, daemon=True).start()
+        threading.Thread(target=recording_loop_ipcamera, daemon=True).start()
     return {"status": "recording"}
 
-@app.post("/stop_recording")
+@app.post("/camera/stop_recording")
 async def stop_recording():
     recording_state["active"] = False
     return {"status": "stopped"}
@@ -290,4 +312,4 @@ async def api_all_status():
   
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("camera-server:app", host="0.0.0.0", port=8000)
+    uvicorn.run("ipcamera-server:app", host="0.0.0.0", port=8000)
