@@ -1,5 +1,5 @@
-## Procedures after clone this repository
-From the Terminal
+## Procedures after clone this repositoryOpen the Terminal
+Open the new terminal and create a venv
 ```text
 with uv commands
   uv init
