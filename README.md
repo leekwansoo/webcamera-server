@@ -1,3 +1,15 @@
+## First if you dont have Git installed on your PC Install Git
+
+Go to Git Download
+
+https://git-scm.com  >install
+
+chose Widows
+
+<img width="1071" height="493" alt="image" src="https://github.com/user-attachments/assets/e09e0723-eaac-4568-9764-e2522efe9548" />
+
+
+
 ## Procedures after clone this repositoryOpen the Terminal
 Open the new terminal and create a venv
 ```text
