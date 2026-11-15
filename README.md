@@ -19,6 +19,18 @@ with uv commands
   .venv/Scripts/activate
   uv add -r requirements.txt
 ```
+
+## add .env file in the root directory
+```text
+TAPO_USERNAME=""
+TAPO_PASSWORD=""
+CAMERA1_RTSP="rtsp://camera_id:password@camera_ipaddress:554/stream2"
+CAMERA1_MAC=""
+CAMERA2_MAC="1"
+CAMERA2_RTSP="rtsp://camera_id:password@camera_ipaddress:554/stream2"
+```
+you can find IP Address for connected IPCAMERA with "arp -a" or "TAPO APP for IPCAMERA"
+
 ## Add OpenH264.dll into .venv/ ..../cv2/
   copy "openh264-2.5.0-win64.dll" to \venv\Lib\site-packages\cv2\openh264-2.5.0-win64.dll
   
