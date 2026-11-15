@@ -13,16 +13,16 @@ with uv commands
   add recordings folder 
 
 ## For IP Camera 
-From Terminal
 ```text
+From Terminal
   python ipcamera-server.py
 From Browser
   localhost:8000  : then you will see the 2 combined view frame for 2 IP Cameras
   localhost:8000/ipcamera  : you will see two separate frames for ipcamera1 and ipcamera2
 ```
 ## For Web Camera 
-From Terminal
 ```text
+From Terminal
   python webcam-server.py
 From Browser
   localhost:8000  : then you will see the 2 combined view frame for 2 Webcam Cameras
@@ -32,8 +32,8 @@ From Browser
 make sure you created "recordings" dirctory at the root-directory since all generated mp3 files will be stored in that directory
 
 ## View Recorded MP3 files with video-server.py
-From terminal
 ```text
+From terminal
   python video-server.py
 From Browser
   localhost:8002/recordings  : you will see the Video Viewer with recorded filelist and Viewing Canvas
