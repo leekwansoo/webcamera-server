@@ -4,26 +4,130 @@
 <meta charset="utf-8">
 <title>Tapo Dual Viewer</title>
 <style>
- body { background:#111; color:#fff; font-family:sans-serif; text-align:center; }
- img { width:95%; max-width:1280px; border:2px solid #333; border-radius:12px; }
- button { padding:12px 24px; margin:10px; font-size:16px; border-radius:8px; cursor:pointer; }
- .rec { background:#e00; color:#fff; }
-</style>
+  body { background:#111; color:#fff; font-family:sans-serif; text-align:center; }
+  img { width:95%; max-width:1280px; border:2px solid #333; border-radius:12px; }
+  button { padding:12px 24px; margin:10px; font-size:16px; border-radius:8px; cursor:pointer; }
+  .rec { background:#e00; color:#fff; }
+  #btnStop { display: none; background:#333; color:#fff; }
+  #btnStop.visible { display: inline-block; }
+ </style>
 </head>
 <body>
 <h2>Tapo TC71 Dual - Sync View</h2>
-<img src="/api/combined/stream" class= "absolute inset-0 w-full h-full object-contain">
+<img id="videoImg" src="/api/combined/stream" class="absolute inset-0 w-full h-full object-contain">
 <div>
-  <button class="rec" onclick="fetch('/camera/start_recording',{method:'POST'}).then(()=>alert('녹화 시작'))">● 녹화 시작</button>
-  <button onclick="fetch('/camera/stop_recording',{method:'POST'}).then(()=>alert('녹화 종료'))">■ 녹화 종료</button>
+  <p id="recordStatus"></p>
+  <p id="recordedFile"></p>
+  <button id="btnStart" class="rec" onclick="startRecording()">● 녹화 시작</button>
+  <button id="btnStop" onclick="stopRecording()">■ 녹화 종료</button>
 </div>
-<p>Wait for IPCamera Streaming Activation</p>
+<p id="waitMsg">Wait for IPCamera Streaming Activation</p>
 <p>왼쪽: CAM0 (101) / 오른쪽: CAM1 (102) - 20fps 동기화 저장</p>
 </body>
 <script>
-  // Clear the Wait message once the video feed loads.
-  document.querySelector('img').addEventListener('load', () => {
-    document.querySelector('body > p').textContent = '';
+  const statusEl = document.getElementById('recordStatus');
+  const fileEl = document.getElementById('recordedFile');
+  const btnStart = document.getElementById('btnStart');
+  const btnStop = document.getElementById('btnStop');
+  const waitMsg = document.getElementById('waitMsg');
+  const videoImg = document.getElementById('videoImg');
+
+  // ✅ Now videoImg exists (we added id="videoImg" above), so this won't throw
+  videoImg.addEventListener('load', () => {
+    if (waitMsg) waitMsg.textContent = '';
   });
+
+  let recordingTimer = null;
+  let recordingSecs = 0;
+
+  async function startRecording() {
+    btnStart.disabled = true;
+    btnStart.textContent = '● 녹화 준비중...';
+    statusEl.textContent = 'Preparing for Record...';
+    fileEl.textContent = '';
+    btnStop.classList.remove('visible');
+
+    try {
+      const res = await fetch('/camera/start_recording', { method: 'POST' });
+      const d = await res.json();
+      console.log("start ->", d);
+      if (d.status === 'already recording') {
+        showRecording();
+        return;
+      }
+      pollUntilRecording();
+    } catch (e) {
+      statusEl.textContent = 'Record failed to start';
+      btnStart.disabled = false;
+      btnStart.textContent = '● 녹화 시작';
+    }
+  }
+
+  function showRecording() {
+    console.log("showRecording called");
+    recordingSecs = 0;
+    statusEl.textContent = 'Recording ...... 00:00';
+    btnStop.classList.add('visible');
+    btnStop.disabled = false;
+    btnStart.style.display = 'none';
+    clearInterval(recordingTimer);
+    recordingTimer = setInterval(() => {
+      recordingSecs++;
+      const mm = String(Math.floor(recordingSecs / 60)).padStart(2, '0');
+      const ss = String(recordingSecs % 60).padStart(2, '0');
+      statusEl.textContent = `Recording ...... ${mm}:${ss}`;
+    }, 1000);
+  }
+
+  async function pollUntilRecording() {
+    let tries = 0;
+    console.log("poll started");
+    const poll = setInterval(async () => {
+      tries++;
+      console.log("poll try", tries);
+      try {
+        const res = await fetch('/camera/recording_state');
+        const d = await res.json();
+        console.log("poll ->", d);
+        if (d.state === 'active' || d.active === true) {
+          console.log("poll success - showing recording UI");
+          clearInterval(poll);
+          showRecording();
+        }
+      } catch (e) {
+        console.log("poll error", e);
+      }
+      if (tries > 20) {
+        clearInterval(poll);
+        statusEl.textContent = 'Recording timeout - check server log';
+        btnStart.disabled = false;
+        btnStart.textContent = '● 녹화 시작';
+      }
+    }, 1000);
+  }
+
+  async function stopRecording() {
+    btnStop.disabled = true;
+    statusEl.textContent = 'Stopping...';
+    try {
+      const res = await fetch('/camera/stop_recording', { method: 'POST' });
+      const data = await res.json();
+      clearInterval(recordingTimer);
+      statusEl.textContent = '';
+      const fp = data.file_path || '';
+      if (fp) {
+        fileEl.innerHTML = `Saved: <a href="${fp}" download>${fp}</a>`;
+      } else {
+        fileEl.textContent = '녹화 종료됨';
+      }
+    } catch (e) {
+      fileEl.textContent = 'Stop failed.';
+    } finally {
+      btnStop.classList.remove('visible');
+      btnStart.style.display = 'inline-block';
+      btnStart.disabled = false;
+      btnStart.textContent = '● 녹화 시작';
+    }
+  }
 </script>
 </html>

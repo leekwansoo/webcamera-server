@@ -18,7 +18,7 @@ print(CAMERA_RTSP)
 OUTPUT_DIR = Path("recordings")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-if os.environ["OPENCV_LOG_LEVEL"].upper() == "ERROR":
+if os.environ.get("OPENCV_LOG_LEVEL", "").upper() == "ERROR":
     cv2.utils.logging.setLogLevel(cv2.utils.logging.LOG_LEVEL_ERROR)
 
 _cameras: dict[str, cv2.VideoCapture] = {}
@@ -42,7 +42,10 @@ app = FastAPI(lifespan=lifespan)
 templates = Jinja2Templates(directory="templates")
 
 # ====== 녹화 상태 ======
-recording_state = {"active": False, "writer": None, "lock": threading.Lock()}
+# ====== 녹화 상태 ======
+# ✅ Only ONE recording_state in the whole file - this one
+recording_state = {"active": False, "state": "passive", "last_file": None}
+_recording_thread = None
        
 class CameraReader:
     def __init__(self, url, cam_id, mode="square", start_delay=0):
@@ -151,6 +154,58 @@ managers = {
 }
 print(managers)
 
+print(managers)
+
+# ====== ✅ Part 1: IPCombinedSource Class Definition - ADD THIS ======
+class IPCombinedSource:
+    """Tapo version of CombinedFrameSource - one source, many consumers"""
+    def __init__(self):
+        self._frame = None
+        self._lock = threading.Lock()
+        self._running = False
+        self._ready = threading.Event()
+
+    def start(self):
+        if self._running:
+            return
+        self._running = True
+        threading.Thread(target=self._capture_loop, daemon=True).start()
+        print("[IP-COMBINED] Source started")
+
+    def _capture_loop(self):
+        print("[IP-COMBINED] _capture_loop STARTED")
+        while self._running:
+            combined = get_combined_portrait()
+            if combined is None:
+                time.sleep(0.05)
+                continue
+            with self._lock:
+                self._frame = combined.copy()
+            time.sleep(0.033)
+
+    def get_frame(self):
+        if not self._running:
+            print("[IP-COMBINED] AUTO STARTING")
+            self.start()
+        with self._lock:
+            return self._frame.copy() if self._frame is not None else None
+
+    def wait_until_ready_sync(self, timeout=15):
+        if not self._running:
+            self.start()
+        for _ in range(30):
+            if self._frame is not None:
+                self._ready.set()
+                return True
+            time.sleep(0.5)
+        self._ready.set()
+        return False
+# ====== End of Class Definition ======
+
+# ====== ✅ Part 2: Creation - KEEP THIS ONE LINE ======
+ip_combined_source = IPCombinedSource()
+print(f"[IP-COMBINED] Created: {ip_combined_source}")
+
 # get_combined에서:
 def get_combined_portrait():
     # 각 카메라에서 50% 더 넓게
@@ -188,25 +243,84 @@ def get_synced_split_frame():
     return combined
 
 def recording_loop_ipcamera():
-    print("Recording started")
-    fourcc = cv2.VideoWriter_fourcc(*'avc1')
-    filepath = OUTPUT_DIR / f"dual_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
-    writer = None
+    print("[REC] === IP Recording started ===")
+    try:
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        if not ip_combined_source._running:
+            ip_combined_source.start()
+        ip_combined_source.wait_until_ready_sync(timeout=15)
+        recording_state["state"] = "active"  # ✅ Polling waits for THIS
+        print("[REC] state -> active")
 
-    while recording_state["active"]:
-        combined = get_combined_portrait() # <-- same function
-        if combined is None: 
-            time.sleep(0.05)
-            continue
-        if writer is None:
-            h, w = combined.shape[:2] # 640, 1080
-            writer = cv2.VideoWriter(str(filepath), fourcc, 20.0, (w, h))
-        writer.write(combined)
-        time.sleep(0.05)
-        
-    if writer:
-        writer.release()
-        print(f"Saved: {filepath}")
+        filepath = OUTPUT_DIR / f"dual_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
+        print(f"[REC] target: {filepath}")
+
+        writer = None
+        frames_written = 0
+        start_time = time.time()
+        TARGET_FPS = 15.0  # ✅ Tapo TC71 is 14-17 fps real - don't use 30, it will look slow
+        frame_interval = 1.0 / TARGET_FPS
+        next_frame_time = time.time()
+
+        while recording_state["active"]:
+            frame = ip_combined_source.get_frame()
+            if frame is None:
+                time.sleep(0.01)
+                continue
+
+            if writer is None:
+                h, w = frame.shape[:2]
+                print(f"[REC] Writer {w}x{h} @ {TARGET_FPS}fps -> {filepath}")
+                # ✅ Try avc1 first, mp4v second
+                writer = None
+                for fourcc_str in ['avc1', 'mp4v']:
+                    test_writer = cv2.VideoWriter(str(filepath), cv2.VideoWriter_fourcc(*fourcc_str), TARGET_FPS, (w, h))
+                    print(f"[REC] Trying {fourcc_str} isOpened={test_writer.isOpened()}")
+                    if test_writer.isOpened():
+                        writer = test_writer
+                        print(f"[REC] Writer OPENED with {fourcc_str}")
+                        break
+                    test_writer.release()
+                # ✅ If BOTH failed, stop recording - don't try to write
+                if writer is None:
+                    print("[REC] ERROR: All codecs failed! Check OpenH264 DLL for avc1.")
+                    print("[REC] Put openh264-2.5.0-win64.dll in same folder as ipcamera-server.py")
+                    recording_state["active"] = False
+                    break  # ✅ This break is for WHILE loop, exits recording
+
+            # ✅ Safety - never call writer.write if writer is None
+            if writer is None:
+                print("[REC] writer is None, skipping frame")
+                time.sleep(0.01)
+                continue
+
+            now = time.time()
+            if now < next_frame_time:
+                time.sleep(next_frame_time - now)
+                continue
+            writer.write(frame)
+            frames_written += 1
+            if frames_written % 75 == 0:
+                print(f"[REC] frames={frames_written} elapsed={time.time()-start_time:.1f}s")
+            next_frame_time += frame_interval
+            if time.time() > next_frame_time + 0.2:
+                next_frame_time = time.time()
+
+        print(f"[REC] Loop ended frames={frames_written}")
+    except Exception as e:
+        print(f"[REC] EXCEPTION: {e}")
+        import traceback; traceback.print_exc()
+    finally:
+        if writer is not None:
+            writer.release()
+        if filepath.exists():
+            print(f"[REC] ✅ SAVED: {filepath} size={filepath.stat().st_size} bytes")
+            recording_state["last_file"] = str(filepath)
+        else:
+            print(f"[REC] ❌ FILE NOT FOUND: {filepath}")
+        recording_state["state"] = "passive"
+        recording_state["active"] = False
+        print("[REC] === IP Recording ended ===")
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
@@ -222,16 +336,12 @@ def mjpeg_generator():
 
 def mjpeg_gen_combined():
     while True:
-        combined = get_combined_portrait()
+        combined = ip_combined_source.get_frame()  # ✅ Not get_combined_portrait() directly
         if combined is None:
             time.sleep(0.05)
             continue
-        # Horizontal combine -> 1280x640
-        # This is perfect square-ish and shows full body for both views
-        # combined = cv2.hconcat([f1, f2]) replaced by get_combined_portrait()
-        # Add labels for golf
         cv2.putText(combined, "FRONT", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,0), 2)
-        cv2.putText(combined, "SIDE DTL", (660, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,0), 2)
+        cv2.putText(combined, "SIDE", (660, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,0), 2)
         _, jpeg = cv2.imencode('.jpg', combined, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
         yield b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + jpeg.tobytes() + b'\r\n'
         time.sleep(0.04)
@@ -265,15 +375,28 @@ async def api_camera_stream(camera_id: str):
 
 @app.post("/camera/start_recording")
 async def start_recording():
-    if not recording_state["active"]:
-        recording_state["active"] = True
-        threading.Thread(target=recording_loop_ipcamera, daemon=True).start()
-    return {"status": "recording"}
+    global _recording_thread
+    print("recording_state:", recording_state)
+    if recording_state["active"]:
+        return {"status": "already recording", "state": "active"}
+    recording_state["active"] = True
+    recording_state["state"] = "preparing"
+    _recording_thread = threading.Thread(target=recording_loop_ipcamera, daemon=True)
+    _recording_thread.start()
+    return {"status": "recording", "state": "preparing"}  # ✅ JS needs state field
 
 @app.post("/camera/stop_recording")
 async def stop_recording():
+    global _recording_thread
+    print("[REC] stop requested")
     recording_state["active"] = False
-    return {"status": "stopped"}
+    if _recording_thread is not None:
+        _recording_thread.join(timeout=3)
+    return {"status": "stopped", "state": "passive", "file_path": recording_state.get("last_file")}
+
+@app.get("/camera/recording_state")
+async def get_recording_state():
+    return {"state": recording_state["state"], "active": recording_state["active"], "file_path": recording_state.get("last_file")}
 
 @app.get("/api/status")
 async def api_all_status():
