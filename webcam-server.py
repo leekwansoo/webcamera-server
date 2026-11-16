@@ -2,7 +2,7 @@ import os
 
 os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")
 
-import cv2, datetime, time, threading
+import cv2, datetime, time, threading, asyncio
 import numpy as np
 from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse
@@ -11,13 +11,6 @@ from pathlib import Path
 from contextlib import asynccontextmanager
 from utils.functions import CAMERA_CONFIG, OUTPUT_DIR, get_camera, open_camera_with_fallback
 from utils.frame_handler import synced_mjpeg_generator, mjpeg_generator, dummy_mjpeg_generator, get_synced_split_frame, recording_loop
-
-# if os.environ["OPENCV_LOG_LEVEL"].upper() == "ERROR":
-    # cv2.utils.logging.setLogLevel(cv2.utils.logging.LOG_LEVEL_ERROR)
-
-
-
-import asyncio
 
 
 _cameras = {name: get_camera(name) for name in CAMERA_CONFIG}
@@ -44,13 +37,17 @@ class CombinedFrameSource:
         while self._running:
             combined = get_synced_split_frame(mode=self.mode)
             loop_count += 1
-            if loop_count == 1:
-                print(f"[COMBINED] first frame -> {combined.shape if combined is not None else None}")
             if combined is None:
                 time.sleep(0.05)
                 continue
+
             with self._lock:
                 self._frame = combined.copy()
+
+            if loop_count == 1 or not self._ready.is_set():
+                print(f"[COMBINED] first frame -> {combined.shape}")
+                self._ready.set()  # <-- AFTER frame exists, not before
+
             time.sleep(0.033)
 
     def get_frame(self):
@@ -93,7 +90,6 @@ templates = Jinja2Templates(directory="templates")
 
 # --- Camera open (same as yours) ---
 
-recording_state = {"active": False, "writer": None}
 
 # 1. Viewer - combined source에서만 읽음
 def generate_frames():
@@ -115,10 +111,6 @@ def generate_frames():
 # 2. Recording - combined source에서만 읽음
 def webcam_recording_loop():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    if not combined_source._running:
-        combined_source.start()
-    combined_source.wait_until_ready_sync(timeout=15)
-
     filepath = OUTPUT_DIR / f"dual_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
     writer = None
     frames_written = 0
@@ -140,6 +132,8 @@ def webcam_recording_loop():
                 writer = cv2.VideoWriter(str(filepath), cv2.VideoWriter_fourcc(*fourcc_str), TARGET_FPS, (w, h))
                 if writer.isOpened():
                     break
+            recording_state["state"] = "active"  # <-- THIS is what frontend waits for
+            print(f"[REC] state -> active", flush=True)
 
         # ✅ Wait until it's time for next frame - not fixed sleep
         now = time.time()
@@ -202,18 +196,39 @@ async def video_feed():
     print("Webcam video feed requested")
     return StreamingResponse(generate_frames(), media_type="multipart/x-mixed-replace; boundary=frame")
 
+# Keep your existing dict, just add "state"
+# passive = idle, preparing = warming up 14-15s, active = really writing file
+recording_state = {"active": False, "state": "passive"}
+
 @app.post("/webcam/start_recording")
 async def start_recording():
     if not recording_state["active"]:
         recording_state["active"] = True
+        recording_state["state"] = "preparing"
+
+        # ✅ THIS BLOCK GOES HERE - in start_recording
+        if combined_source._frame is not None and combined_source._running:
+            print("[REC] frame already exists, skip wait")
+            # start recording immediately, don't call wait_until_ready_sync
+            pass
+        else:
+            combined_source.wait_until_ready_sync(timeout=15)
+
         threading.Thread(target=webcam_recording_loop, daemon=True).start()
-    return {"status": "recording"}
+
+    return {"status": "recording", "state": recording_state["state"]}
 
 @app.post("/webcam/stop_recording")
 async def stop_recording():
     recording_state["active"] = False
-    threading.Thread(target=webcam_recording_loop, daemon=True)._stop()
-    return {"status": "stopped"}
+    recording_state["state"] = "passive"  # <-- added
+    # NOTE: don't call Thread._stop() - it doesn't stop the loop safely.
+    # Just setting active=False lets webcam_recording_loop exit by itself.
+    return {"status": "stopped", "state": recording_state["state"]}
+
+@app.get("/webcam/recording_state")
+async def get_recording_state():
+    return {"state": recording_state["state"], "active": recording_state["active"]}
 
 if __name__ == "__main__":
     import uvicorn

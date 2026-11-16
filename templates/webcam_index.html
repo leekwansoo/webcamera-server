@@ -7,27 +7,133 @@
  body { background:#111; color:#fff; font-family:sans-serif; text-align:center; margin:0; padding:20px; }
  .video-wrap { width:95%; max-width:1260px; margin:0 auto; background:#000; border-radius:12px; overflow:hidden; aspect-ratio: 1260/640; }
  .video-wrap img { width:100%; height:100%; object-fit: contain; display:block; }
+ .controls { margin-top:14px; }
  button { padding:12px 24px; margin:10px; font-size:16px; border-radius:8px; cursor:pointer; }
+ button:disabled { opacity:0.4; cursor:not-allowed; }
  .rec { background:#e00; color:#fff; }
+ #recordStatus { font-weight:bold; font-size:18px; min-height:24px; margin:10px 0 0 0; color:#ffcc00; }
+ #recordedFile { min-height:24px; margin:6px 0 0 0; }
+ #recordedFile a { color:#7fd4ff; }
 </style>
 </head>
 <body>
 <h2>Web Camera Dual - Sync View (Portrait Wide 16:9)</h2>
+
 <div class="video-wrap">
-  <img src="/video_feed" />
+  <img id="videoImg" src="/video_feed" />
 </div>
-<div>
-  <button class="rec" onclick="fetch('/webcam/start_recording',{method:'POST'}).then(()=>alert('녹화 시작'))">● 녹화 시작</button>
-  <button onclick="fetch('/webcam/stop_recording',{method:'POST'}).then(()=>alert('녹화 종료'))">■ 녹화 종료</button>
+
+<!-- STATUS + BUTTONS MUST BE OUTSIDE .video-wrap -->
+<div class="controls">
+  <p id="recordStatus"></p>
+  <p id="recordedFile"></p>
+
+  <button id="btnStart" class="rec" onclick="startRecording()">● 녹화 시작</button>
+  <button id="btnStop" onclick="stopRecording()" disabled>■ 녹화 종료</button>
 </div>
-<p>Wait for WebCamera Activation</p>
+
+<p id="waitMsg">Wait for WebCamera Activation</p>
 <p>왼쪽: WEBCAM1 / 오른쪽: WEBCAM2 - 1260x640 Portrait Wide - 비율 정상</p>
-</body>
 
 <script>
+  const statusEl = document.getElementById('recordStatus');
+  const fileEl = document.getElementById('recordedFile');
+  const btnStart = document.getElementById('btnStart');
+  const btnStop = document.getElementById('btnStop');
+
   // Clear the Wait message once the video feed loads.
-  document.querySelector('.video-wrap img').addEventListener('load', () => {
-    document.querySelector('body > p').textContent = '';
+  document.getElementById('videoImg').addEventListener('load', () => {
+    document.getElementById('waitMsg').textContent = '';
   });
+
+  let recordingTimer = null;
+  let recordingSecs = 0;
+
+  async function startRecording() {
+  statusEl.textContent = 'Preparing for Record...';
+  fileEl.textContent = '';
+  btnStart.disabled = true;
+  btnStop.disabled = true;
+
+  try {
+    const res = await fetch('/webcam/start_recording', { method: 'POST' });
+    const d = await res.json(); // <-- call ONLY ONCE
+
+    if (!res.ok) {
+      statusEl.textContent = 'Record failed to start';
+      btnStart.disabled = false;
+      return;
+    }
+
+    if (d.state === 'active') {
+      // Rare: already recording (e.g. cold start was instant)
+      showRecording();
+    } else {
+      // Normal: server says "preparing" -> wait for polling
+      // DO NOT show Recording here
+      pollUntilRecording();
+    }
+
+  } catch (e) {
+    statusEl.textContent = 'Record failed to start';
+    btnStart.disabled = false;
+  }
+}
+
+function showRecording() {
+  recordingSecs = 0;
+  statusEl.textContent = 'Recording ...... 00:00';
+  btnStop.disabled = false;
+  clearInterval(recordingTimer);
+  recordingTimer = setInterval(() => {
+    recordingSecs++;
+    const mm = String(Math.floor(recordingSecs / 60)).padStart(2, '0');
+    const ss = String(recordingSecs % 60).padStart(2, '0');
+    statusEl.textContent = `Recording ...... ${mm}:${ss}`;
+  }, 1000);
+}
+
+  async function stopRecording() {
+    btnStop.disabled = true;
+    statusEl.textContent = 'Stopping...';
+
+    try {
+      const res = await fetch('/webcam/stop_recording', { method: 'POST' });
+      let data = {};
+      try { data = await res.json(); } catch(e) { data = {}; }
+
+      clearInterval(recordingTimer);
+
+      // 3. Hide status, show file_path
+      statusEl.textContent = '';
+
+      const fp = data.file_path || data.file || data.path || '';
+      if (fp) {
+        fileEl.innerHTML = `Saved: <a href="${fp}" download>${fp}</a>`;
+      } else {
+        fileEl.textContent = '녹화 종료됨';
+      }
+
+    } catch (e) {
+      statusEl.textContent = '';
+      fileEl.textContent = 'Stop failed.';
+    } finally {
+      btnStart.disabled = false;
+      btnStop.disabled = true;
+    }
+  }
+
+async function pollUntilRecording() {
+  const poll = setInterval(async () => {
+    const res = await fetch('/webcam/recording_state');
+    const d = await res.json();
+    if (d.state === 'active') {
+      clearInterval(poll);
+      showRecording();
+    }
+  }, 1000);
+}
+
 </script>
+</body>
 </html>
